@@ -216,6 +216,8 @@ func (c *ClientConn) QueryFrame(ctx context.Context, frm *frame.Frame) (*ResultS
 	switch msg := response.Body.Message.(type) {
 	case *message.RowsResult:
 		return NewResultSet(msg, response.Header.Version), nil
+	case *message.SchemaChangeResult:
+		return nil, nil
 	case *message.VoidResult, *message.PreparedResult:
 		return nil, nil // TODO: Make empty result set
 	case message.Error:

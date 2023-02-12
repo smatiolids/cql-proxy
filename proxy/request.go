@@ -43,6 +43,7 @@ type request struct {
 	state      idempotentState
 	keyspace   string
 	msg        message.Message
+	stmt       *parser.Statement
 	done       bool
 	retryCount int
 	host       *proxycore.Host
@@ -50,6 +51,11 @@ type request struct {
 	qp         proxycore.QueryPlan
 	raw        *frame.RawFrame
 	mu         sync.Mutex
+}
+
+type RequestResponse struct {
+	req *request
+	res *frame.RawFrame
 }
 
 func (r *request) Execute(next bool) {
@@ -148,6 +154,12 @@ func (r *request) OnResult(raw *frame.RawFrame) {
 			!r.handleErrorResult(raw) { // If the error result is retried then we don't send back this response
 			r.client.proxy.maybeStorePreparedIdempotence(raw, r.msg)
 			r.done = true
+			reqres := &RequestResponse{r, raw}
+			select {
+			// put to the channel; drop if the buffer is full; we should never block normal queries
+			case r.client.proxy.StatsManager.MessageFeed <- reqres:
+			default:
+			}
 			r.sendRaw(raw)
 		}
 	}

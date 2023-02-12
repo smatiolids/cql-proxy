@@ -67,6 +67,10 @@ type runConfig struct {
 	DataCenter         string        `yaml:"data-center" help:"Data center to use in system tables" env:"DATA_CENTER"`
 	Tokens             []string      `yaml:"tokens" help:"Tokens to use in the system tables. It's not recommended" env:"TOKENS"`
 	Peers              []PeerConfig  `yaml:"peers" kong:"-"` // Not available as a CLI flag
+	TrackUsage         bool          `yaml:"track-usage" help:"Enable usage tracking for Astra Serverless estimation." env:"TRACK_USAGE" default:"false"`
+	TrackSystemUsage   bool          `yaml:"track-system-usage" help:"Include system tables in usage tracking." env:"TRACK_SYSTEM_USAGE" default:"false"`
+	UsageKeyspace      string        `yaml:"usage-keyspace" help:"Specify the keyspace where the usage table will be created." env:"USAGE_KEYSPACE"`
+	UsageTable         string        `yaml:"usage-table" help:"Specify the name of the table where usage data will be stored.  Defaults to astra_usage_stats." default:"astra_usage_stats" env:"USAGE_TABLE"`
 }
 
 // Run starts the proxy command. 'args' shouldn't include the executable (i.e. os.Args[1:]). It returns the exit code
@@ -152,6 +156,11 @@ func Run(ctx context.Context, args []string) int {
 		return 1
 	}
 
+	if cfg.TrackUsage && len(cfg.UsageKeyspace) == 0 {
+		cliCtx.Errorf("If track-usage is enabled, you must specify a keyspace where the usage table will be created.")
+		return 1
+	}
+
 	var logger *zap.Logger
 	if cfg.Debug {
 		logger, err = zap.NewDevelopment()
@@ -184,6 +193,9 @@ func Run(ctx context.Context, args []string) int {
 		Tokens:            cfg.Tokens,
 		Peers:             cfg.Peers,
 		IdempotentGraph:   cfg.IdempotentGraph,
+		TrackUsage:        cfg.TrackUsage,
+		UsageKeyspace:     cfg.UsageKeyspace,
+		UsageTable:        cfg.UsageTable,
 	})
 
 	cfg.Bind = maybeAddPort(cfg.Bind, "9042")
@@ -272,6 +284,11 @@ func (c *runConfig) listenAndServe(p *Proxy, mux *http.ServeMux, ctx context.Con
 	// connections to the backend cluster so that when the readiness check is hit the proxy is actually ready.
 
 	err = p.Connect()
+	if err != nil {
+		return err
+	}
+
+	p.StatsManager, err = NewStatsManager(ctx, c, p)
 	if err != nil {
 		return err
 	}

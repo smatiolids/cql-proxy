@@ -344,6 +344,20 @@ func (c *Cluster) queryHosts(ctx context.Context, conn *ClientConn, version prim
 		DSEVersion:     dseVersion}, nil
 }
 
+func (c *Cluster) ExecuteControlQuery(ctx context.Context, query string) (rs *ResultSet, err error) {
+	conn := c.controlConn
+	version := c.config.Version
+
+	rs, err = conn.Query(ctx, version, &message.Query{
+		Query: query,
+		Options: &message.QueryOptions{
+			Consistency: primitive.ConsistencyLevelLocalQuorum,
+		},
+	})
+
+	return rs, err
+}
+
 func (c *Cluster) addHosts(hosts []*Host, rs *ResultSet) []*Host {
 	for i := 0; i < rs.RowCount(); i++ {
 		row := rs.Row(i)

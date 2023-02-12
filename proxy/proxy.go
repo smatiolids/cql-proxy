@@ -76,6 +76,10 @@ type Config struct {
 	DC                string
 	Tokens            []string
 	Peers             []PeerConfig
+	TrackUsage        bool
+	TrackSystemUsage  bool
+	UsageKeyspace     string
+	UsageTable        string
 	// PreparedCache a cache that stores prepared queries. If not set it uses the default implementation with a max
 	// capacity of ~100MB.
 	PreparedCache proxycore.PreparedCache
@@ -101,6 +105,7 @@ type Proxy struct {
 	localNode           *node
 	nodes               []*node
 	onceUsingGraphLog   sync.Once
+	StatsManager        *statsManager
 }
 
 type node struct {
@@ -586,10 +591,11 @@ func (c *client) Receive(reader io.Reader) error {
 func (c *client) execute(raw *frame.RawFrame, state idempotentState, keyspace string, msg message.Message) {
 	if sess, err := c.proxy.findSession(raw.Header.Version, c.keyspace); err == nil {
 		req := &request{
-			client:   c,
-			session:  sess,
-			state:    state,
-			msg:      msg,
+			client:  c,
+			session: sess,
+			state:   state,
+			msg:     msg,
+			//stmt:     stmt,
 			keyspace: keyspace,
 			done:     false,
 			stream:   raw.Header.StreamId,
@@ -664,8 +670,13 @@ func (c *client) handleExecute(raw *frame.RawFrame, msg *partialExecute, customP
 
 func (c *client) handleQuery(raw *frame.RawFrame, msg *partialQuery, customPayload map[string][]byte) {
 	c.proxy.logger.Debug("handling query", zap.String("query", msg.query), zap.Int16("stream", raw.Header.StreamId))
-
+	//c.proxy.logger.Info("handling query", zap.String("query", msg.query), zap.Int16("stream", raw.Header.StreamId))
+	//c.proxy.logger.Info("Query/Statement Size:", zap.Int32("message size in bytes", raw.Header.BodyLength))
 	handled, stmt, err := parser.IsQueryHandled(parser.IdentifierFromString(c.keyspace), msg.query)
+
+	// if raw.Body[3] == 0xc {
+	// 	raw.Body = []uint8{0, 0, 0, 19, 115, 101, 108, 101, 99, 116, 32, 42, 32, 102, 114, 111, 109, 32, 116, 98, 108, 49, 59, 0, 1, 52, 0, 0, 0, 100, 0, 8, 0, 5, 243, 97, 47, 75, 4, 192}
+	// }
 
 	if handled {
 		if err != nil {

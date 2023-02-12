@@ -66,6 +66,10 @@ func (p *partialQuery) Clone() message.Message {
 	return &partialQuery{p.query}
 }
 
+func (p *partialQuery) GetQuery() message.Message {
+	return &partialQuery{p.query}
+}
+
 type partialExecute struct {
 	queryId []byte
 }
