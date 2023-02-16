@@ -20,10 +20,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/datastax/cql-proxy/proxycore"
 	"github.com/datastax/go-cassandra-native-protocol/frame"
 	"github.com/datastax/go-cassandra-native-protocol/message"
 	"github.com/datastax/go-cassandra-native-protocol/primitive"
+	"github.com/qzg/cql-proxy/proxycore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

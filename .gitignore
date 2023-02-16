@@ -1,3 +1,5 @@
 .idea
 *.zip
 cql-proxy
+config.yml
+config2.yml

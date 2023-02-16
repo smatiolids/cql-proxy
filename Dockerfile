@@ -1,4 +1,4 @@
-FROM golang:1.16 as builder
+FROM golang:1.20 as builder
 
 # Disable cgo to remove gcc dependency
 ENV CGO_ENABLED=0
@@ -13,7 +13,7 @@ RUN go mod download
 COPY . ./
 
 # Build and install binary
-RUN go install github.com/datastax/cql-proxy
+RUN go install github.com/qzg/cql-proxy
 
 # Run unit tests
 RUN go test -short -v ./...

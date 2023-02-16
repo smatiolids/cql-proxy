@@ -13,7 +13,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/procyon-projects/chrono"
 	"go.uber.org/zap"
-	// "github.com/datastax/cql-proxy/parser"
 )
 
 type metricRow struct {
@@ -384,6 +383,7 @@ func flushCurrentStats(ctx context.Context, config *runConfig, proxy *Proxy) {
 			fragment = strings.ReplaceAll(fragment, "\n", " ")
 			fragment = strings.ReplaceAll(fragment, "\t", "")
 			statement += fragment
+
 		}
 	}
 

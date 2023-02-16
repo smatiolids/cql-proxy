@@ -20,9 +20,9 @@ import (
 	"reflect"
 	"sync"
 
-	"github.com/datastax/cql-proxy/parser"
-	"github.com/datastax/cql-proxy/proxycore"
 	"github.com/datastax/go-cassandra-native-protocol/primitive"
+	"github.com/qzg/cql-proxy/parser"
+	"github.com/qzg/cql-proxy/proxycore"
 
 	"github.com/datastax/go-cassandra-native-protocol/frame"
 	"github.com/datastax/go-cassandra-native-protocol/message"
