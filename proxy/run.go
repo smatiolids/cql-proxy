@@ -40,37 +40,41 @@ const livenessPath = "/liveness"
 const readinessPath = "/readiness"
 
 type runConfig struct {
-	AstraBundle        string        `yaml:"astra-bundle" help:"Path to secure connect bundle for an Astra database. Requires '--username' and '--password'. Ignored if using the token or contact points option." short:"b" env:"ASTRA_BUNDLE"`
-	AstraToken         string        `yaml:"astra-token" help:"Token used to authenticate to an Astra database. Requires '--astra-database-id'. Ignored if using the bundle path or contact points option." short:"t" env:"ASTRA_TOKEN"`
-	AstraDatabaseID    string        `yaml:"astra-database-id" help:"Database ID of the Astra database. Requires '--astra-token'" short:"i" env:"ASTRA_DATABASE_ID"`
-	AstraApiURL        string        `yaml:"astra-api-url" help:"URL for the Astra API" default:"https://api.astra.datastax.com" env:"ASTRA_API_URL"`
-	AstraTimeout       time.Duration `yaml:"astra-timeout" help:"Timeout for contacting Astra when retrieving the bundle and metadata" default:"10s" env:"ASTRA_TIMEOUT"`
-	ContactPoints      []string      `yaml:"contact-points" help:"Contact points for cluster. Ignored if using the bundle path or token option." short:"c" env:"CONTACT_POINTS"`
-	Username           string        `yaml:"username" help:"Username to use for authentication" short:"u" env:"USERNAME"`
-	Password           string        `yaml:"password" help:"Password to use for authentication" short:"p" env:"PASSWORD"`
-	Port               int           `yaml:"port" help:"Default port to use when connecting to cluster" default:"9042" short:"r" env:"PORT"`
-	ProtocolVersion    string        `yaml:"protocol-version" help:"Initial protocol version to use when connecting to the backend cluster (default: v4, options: v3, v4, v5, DSEv1, DSEv2)" default:"v4" short:"n" env:"PROTOCOL_VERSION"`
-	MaxProtocolVersion string        `yaml:"max-protocol-version" help:"Max protocol version supported by the backend cluster (default: v4, options: v3, v4, v5, DSEv1, DSEv2)" default:"v4" short:"m" env:"MAX_PROTOCOL_VERSION"`
-	Bind               string        `yaml:"bind" help:"Address to use to bind server" short:"a" default:":9042" env:"BIND"`
-	Config             *os.File      `yaml:"-" help:"YAML configuration file" short:"f" env:"CONFIG_FILE"` // Not available in the configuration file
-	Debug              bool          `yaml:"debug" help:"Show debug logging" default:"false" env:"DEBUG"`
-	HealthCheck        bool          `yaml:"health-check" help:"Enable liveness and readiness checks" default:"false" env:"HEALTH_CHECK"`
-	HttpBind           string        `yaml:"http-bind" help:"Address to use to bind HTTP server used for health checks" default:":8000" env:"HTTP_BIND"`
-	HeartbeatInterval  time.Duration `yaml:"heartbeat-interval" help:"Interval between performing heartbeats to the cluster" default:"30s" env:"HEARTBEAT_INTERVAL"`
-	IdleTimeout        time.Duration `yaml:"idle-timeout" help:"Duration between successful heartbeats before a connection to the cluster is considered unresponsive and closed" default:"60s" env:"IDLE_TIMEOUT"`
-	ReadinessTimeout   time.Duration `yaml:"readiness-timeout" help:"Duration the proxy is unable to connect to the backend cluster before it is considered not ready" default:"30s" env:"READINESS_TIMEOUT"`
-	IdempotentGraph    bool          `yaml:"idempotent-graph" help:"If true it will treat all graph queries as idempotent by default and retry them automatically. It may be dangerous to retry some graph queries -- use with caution." default:"false" env:"IDEMPOTENT_GRAPH"`
-	NumConns           int           `yaml:"num-conns" help:"Number of connection to create to each node of the backend cluster" default:"1" env:"NUM_CONNS"`
-	ProxyCertFile      string        `yaml:"proxy-cert-file" help:"Path to a PEM encoded certificate file with its intermediate certificate chain. This is used to encrypt traffic for proxy clients" env:"PROXY_CERT_FILE"`
-	ProxyKeyFile       string        `yaml:"proxy-key-file" help:"Path to a PEM encoded private key file. This is used to encrypt traffic for proxy clients" env:"PROXY_KEY_FILE"`
-	RpcAddress         string        `yaml:"rpc-address" help:"Address to advertise in the 'system.local' table for 'rpc_address'. It must be set if configuring peer proxies" env:"RPC_ADDRESS"`
-	DataCenter         string        `yaml:"data-center" help:"Data center to use in system tables" env:"DATA_CENTER"`
-	Tokens             []string      `yaml:"tokens" help:"Tokens to use in the system tables. It's not recommended" env:"TOKENS"`
-	Peers              []PeerConfig  `yaml:"peers" kong:"-"` // Not available as a CLI flag
-	TrackUsage         bool          `yaml:"track-usage" help:"Enable usage tracking for Astra Serverless estimation." env:"TRACK_USAGE" default:"false"`
-	TrackSystemUsage   bool          `yaml:"track-system-usage" help:"Include system tables in usage tracking." env:"TRACK_SYSTEM_USAGE" default:"false"`
-	UsageKeyspace      string        `yaml:"usage-keyspace" help:"Specify the keyspace where the usage table will be created." env:"USAGE_KEYSPACE"`
-	UsageTable         string        `yaml:"usage-table" help:"Specify the name of the table where usage data will be stored.  Defaults to astra_usage_stats." default:"astra_usage_stats" env:"USAGE_TABLE"`
+	AstraBundle          string        `yaml:"astra-bundle" help:"Path to secure connect bundle for an Astra database. Requires '--username' and '--password'. Ignored if using the token or contact points option." short:"b" env:"ASTRA_BUNDLE"`
+	AstraToken           string        `yaml:"astra-token" help:"Token used to authenticate to an Astra database. Requires '--astra-database-id'. Ignored if using the bundle path or contact points option." short:"t" env:"ASTRA_TOKEN"`
+	AstraDatabaseID      string        `yaml:"astra-database-id" help:"Database ID of the Astra database. Requires '--astra-token'" short:"i" env:"ASTRA_DATABASE_ID"`
+	AstraApiURL          string        `yaml:"astra-api-url" help:"URL for the Astra API" default:"https://api.astra.datastax.com" env:"ASTRA_API_URL"`
+	AstraTimeout         time.Duration `yaml:"astra-timeout" help:"Timeout for contacting Astra when retrieving the bundle and metadata" default:"10s" env:"ASTRA_TIMEOUT"`
+	ContactPoints        []string      `yaml:"contact-points" help:"Contact points for cluster. Ignored if using the bundle path or token option." short:"c" env:"CONTACT_POINTS"`
+	Username             string        `yaml:"username" help:"Username to use for authentication" short:"u" env:"USERNAME"`
+	Password             string        `yaml:"password" help:"Password to use for authentication" short:"p" env:"PASSWORD"`
+	Port                 int           `yaml:"port" help:"Default port to use when connecting to cluster" default:"9042" short:"r" env:"PORT"`
+	ProtocolVersion      string        `yaml:"protocol-version" help:"Initial protocol version to use when connecting to the backend cluster (default: v4, options: v3, v4, v5, DSEv1, DSEv2)" default:"v4" short:"n" env:"PROTOCOL_VERSION"`
+	MaxProtocolVersion   string        `yaml:"max-protocol-version" help:"Max protocol version supported by the backend cluster (default: v4, options: v3, v4, v5, DSEv1, DSEv2)" default:"v4" short:"m" env:"MAX_PROTOCOL_VERSION"`
+	Bind                 string        `yaml:"bind" help:"Address to use to bind server" short:"a" default:":9042" env:"BIND"`
+	Config               *os.File      `yaml:"-" help:"YAML configuration file" short:"f" env:"CONFIG_FILE"` // Not available in the configuration file
+	Debug                bool          `yaml:"debug" help:"Show debug logging" default:"false" env:"DEBUG"`
+	HealthCheck          bool          `yaml:"health-check" help:"Enable liveness and readiness checks" default:"false" env:"HEALTH_CHECK"`
+	HttpBind             string        `yaml:"http-bind" help:"Address to use to bind HTTP server used for health checks" default:":8000" env:"HTTP_BIND"`
+	HeartbeatInterval    time.Duration `yaml:"heartbeat-interval" help:"Interval between performing heartbeats to the cluster" default:"30s" env:"HEARTBEAT_INTERVAL"`
+	IdleTimeout          time.Duration `yaml:"idle-timeout" help:"Duration between successful heartbeats before a connection to the cluster is considered unresponsive and closed" default:"60s" env:"IDLE_TIMEOUT"`
+	ReadinessTimeout     time.Duration `yaml:"readiness-timeout" help:"Duration the proxy is unable to connect to the backend cluster before it is considered not ready" default:"30s" env:"READINESS_TIMEOUT"`
+	IdempotentGraph      bool          `yaml:"idempotent-graph" help:"If true it will treat all graph queries as idempotent by default and retry them automatically. It may be dangerous to retry some graph queries -- use with caution." default:"false" env:"IDEMPOTENT_GRAPH"`
+	NumConns             int           `yaml:"num-conns" help:"Number of connection to create to each node of the backend cluster" default:"1" env:"NUM_CONNS"`
+	ProxyCertFile        string        `yaml:"proxy-cert-file" help:"Path to a PEM encoded certificate file with its intermediate certificate chain. This is used to encrypt traffic for proxy clients" env:"PROXY_CERT_FILE"`
+	ProxyKeyFile         string        `yaml:"proxy-key-file" help:"Path to a PEM encoded private key file. This is used to encrypt traffic for proxy clients" env:"PROXY_KEY_FILE"`
+	RpcAddress           string        `yaml:"rpc-address" help:"Address to advertise in the 'system.local' table for 'rpc_address'. It must be set if configuring peer proxies" env:"RPC_ADDRESS"`
+	DataCenter           string        `yaml:"data-center" help:"Data center to use in system tables" env:"DATA_CENTER"`
+	Tokens               []string      `yaml:"tokens" help:"Tokens to use in the system tables. It's not recommended" env:"TOKENS"`
+	Peers                []PeerConfig  `yaml:"peers" kong:"-"` // Not available as a CLI flag
+	TrackUsage           bool          `yaml:"track-usage" help:"Enable usage tracking for Astra Serverless estimation." env:"TRACK_USAGE" default:"false"`
+	UsageTrackSystem     bool          `yaml:"usage-track-system" help:"Include system tables in usage tracking." env:"USAGE_TRACK_SYSTEM" default:"false"`
+	UsageKeyspace        string        `yaml:"usage-keyspace" help:"Specify the keyspace where the usage table will be created." env:"USAGE_KEYSPACE"`
+	UsageRruBytes        int           `yaml:"usage-rru-bytes" help:"Specify the size of a read-request unit" default:"4096" env:"USAGE_RRU_BYTES"`
+	UsageWruBytes        int           `yaml:"usage-wru-bytes" help:"Specify the size of a write-request unit" default:"1024" env:"USAGE_WRU_BYTES"`
+	UsageFlushSeconds    int           `yaml:"usage-flush-seconds" help:"Specify how frequently the accumulated stats should be made durable" default:"60" env:"USAGE_FLUSH_SECONDS"`
+	UsageTable           string        `yaml:"usage-table" help:"Specify the name of the table where usage data will be stored.  Defaults to astra_usage_stats." default:"astra_usage_stats" env:"USAGE_TABLE"`
+	UsageHistogramsTable string        `yaml:"usage-histograms-table" help:"Specify the name of the table where usage histograms will be stored.  Defaults to astra_usage_histograms." default:"astra_usage_histograms" env:"USAGE_HISTOGRAMS_TABLE"`
 }
 
 // Run starts the proxy command. 'args' shouldn't include the executable (i.e. os.Args[1:]). It returns the exit code

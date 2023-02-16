@@ -61,25 +61,29 @@ type PeerConfig struct {
 }
 
 type Config struct {
-	Version           primitive.ProtocolVersion
-	MaxVersion        primitive.ProtocolVersion
-	Auth              proxycore.Authenticator
-	Resolver          proxycore.EndpointResolver
-	ReconnectPolicy   proxycore.ReconnectPolicy
-	RetryPolicy       RetryPolicy
-	IdempotentGraph   bool
-	NumConns          int
-	Logger            *zap.Logger
-	HeartBeatInterval time.Duration
-	IdleTimeout       time.Duration
-	RPCAddr           string
-	DC                string
-	Tokens            []string
-	Peers             []PeerConfig
-	TrackUsage        bool
-	TrackSystemUsage  bool
-	UsageKeyspace     string
-	UsageTable        string
+	Version              primitive.ProtocolVersion
+	MaxVersion           primitive.ProtocolVersion
+	Auth                 proxycore.Authenticator
+	Resolver             proxycore.EndpointResolver
+	ReconnectPolicy      proxycore.ReconnectPolicy
+	RetryPolicy          RetryPolicy
+	IdempotentGraph      bool
+	NumConns             int
+	Logger               *zap.Logger
+	HeartBeatInterval    time.Duration
+	IdleTimeout          time.Duration
+	RPCAddr              string
+	DC                   string
+	Tokens               []string
+	Peers                []PeerConfig
+	TrackUsage           bool
+	UsageTrackSystem     bool
+	UsageKeyspace        string
+	UsageWruBytes        int
+	UsageRruBytes        int
+	UsageTable           string
+	UsageFlushSeconds    int
+	UsageHistogramsTable string
 	// PreparedCache a cache that stores prepared queries. If not set it uses the default implementation with a max
 	// capacity of ~100MB.
 	PreparedCache proxycore.PreparedCache

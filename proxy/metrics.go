@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/procyon-projects/chrono"
+	"go.uber.org/zap"
 	// "github.com/datastax/cql-proxy/parser"
 )
 
@@ -66,13 +68,17 @@ func NewMetricRow() *metricRow {
 	return mr
 }
 
-// stats[timestamp]["keyspace.table"]["select_count"] = 12345
+// sm.stats[timestamp]["keyspace.table"]["select_count"] = 12345
 type statsrecord map[time.Time]map[string]*metricRow
+
+// sm.histograms[timestamp]["keyspace.table"]["reads|writes|all"][5|9|234...] = 1232455
+type histogram map[time.Time]map[string]map[string]map[uint64]uint64
 
 type statsManager struct {
 	id          string
 	config      *runConfig
 	stats       statsrecord
+	histograms  histogram
 	ctx         context.Context
 	MessageFeed chan *RequestResponse
 }
@@ -93,12 +99,15 @@ func NewStatsManager(ctx context.Context, config *runConfig, proxy *Proxy) (*sta
 				id:          uuid.NewString(),
 				config:      config,
 				stats:       map[time.Time]map[string]*metricRow{},
+				histograms:  map[time.Time]map[string]map[string]map[uint64]uint64{},
 				ctx:         ctx,
 				MessageFeed: make(chan *RequestResponse, 1024),
 			}
 			sm.stats[timebucket] = map[string]*metricRow{}
+			sm.histograms[timebucket] = map[string]map[string]map[uint64]uint64{}
 
 			maybeCreateMetricsTable(ctx, config, proxy)
+			maybeCreateHistogramsTable(ctx, config, proxy)
 			go periodicallyFlush(ctx, config, proxy)
 			go listen()
 		})
@@ -120,14 +129,216 @@ func listen() {
 	}
 }
 
+// to do this "correctly" eventually I'll need to be able to:
+//   - size the parameters into a write or the results of the write...?
+//   - add the size of the writetimes for each non-partition-key field
+//   - don't charge for system tables
+func handleQuery(reqres *RequestResponse) {
+	var keyspaceTableName, query string
+
+	switch msg := reqres.req.msg.(type) {
+	case *partialExecute:
+		if prepare, ok := reqres.req.client.proxy.preparedCache.Load(hex.EncodeToString(msg.queryId)); !ok {
+			reqres.req.client.proxy.logger.Error("partialExecute ERROR")
+		} else {
+			query = string(prepare.PreparedFrame.Body[4:])
+		}
+	case *partialQuery:
+		query = msg.query
+	case *partialBatch:
+		reqres.req.client.proxy.logger.Info("partialBatch not currently implemented")
+	default:
+		reqres.req.client.proxy.logger.Error("Unknown message type")
+		fmt.Println(msg)
+	}
+
+	if len(query) > 0 {
+		// INSERT INTO keyspace.table (fields...) VALUES (values...)
+		// UPDATE keyspace.table [USING] SET field=value, ...
+		// SELECT (*|fields|DISTINCT partition) FROM keyspace.table WHERE predicate=value AND ...
+		// DELETE [(fields...)] FROM keyspace.table [USING] WHERE predicate=value AND ...
+		find_tables := regexp.MustCompile(`(?i)(INTO|UPDATE|FROM)\s*([a-zA-Z._]*)\s*`)
+		sys_re := regexp.MustCompile(`^system`)
+		// query = strings.ReplaceAll(query, "\n", " ")
+		tables := find_tables.FindStringSubmatch(query)
+
+		if len(tables) == 0 {
+			reqres.req.client.proxy.logger.Info("Encountered an unhandled query/statement", zap.String("query:", query))
+			return // TODO: do something more interesting here, like panic
+		} else if !strings.Contains(tables[2], ".") {
+			// if there's no dot in the table name, prepend the keyspace and a dot to the table name
+			keyspace := strings.ReplaceAll(reqres.req.keyspace, "\"", "")
+			keyspaceTableName = keyspace + "." + tables[2]
+		} else {
+			keyspaceTableName = tables[2]
+		}
+
+		// if system table tracking is off and the working keyspace name starts with "system", skip
+		if !sm.config.UsageTrackSystem && sys_re.MatchString(keyspaceTableName) {
+			return
+		}
+
+		timebucket := time.Now().Round(time.Hour)
+		// timebucket := time.Now().Round(time.Minute) // for testing
+
+		mr, ok := sm.stats[timebucket][keyspaceTableName]
+		if !ok {
+			if _, ok := sm.stats[timebucket]; !ok {
+				sm.stats[timebucket] = map[string]*metricRow{}
+			}
+			mr = NewMetricRow()
+			sm.stats[timebucket][keyspaceTableName] = mr
+		}
+
+		if isSystemTable(query) {
+			return
+		} else if match, _ := regexp.MatchString(`(?i)^\s*SELECT`, query); match {
+			handleSELECT(reqres, keyspaceTableName, timebucket, mr)
+		} else if match, _ := regexp.MatchString(`(?i)(IF NOT EXISTS|IF EXISTS)`, query); match {
+			// this case still needs some way to handle UPDATE ... IF ...
+			handleLWT(reqres, keyspaceTableName, timebucket, mr)
+		} else if match, _ := regexp.MatchString(`(?i)^\s*INSERT`, query); match {
+			handleINSERT(reqres, keyspaceTableName, timebucket, mr)
+		} else if match, _ := regexp.MatchString(`(?i)^\s*UPDATE`, query); match {
+			handleUPDATE(reqres, keyspaceTableName, timebucket, mr)
+		} else if match, _ := regexp.MatchString(`(?i)^\s*DELETE`, query); match {
+			handleDELETE(reqres, keyspaceTableName, timebucket, mr)
+		}
+	}
+
+}
+
+func handleSELECT(reqres *RequestResponse, keyspaceTableName string, timebucket time.Time, mr *metricRow) {
+	req_size := reqres.req.raw.Header.BodyLength
+	res_size := reqres.res.Header.BodyLength
+	reqres_size := uint64(req_size) + uint64(res_size)
+	rrus := uint64(math.Ceil(float64(reqres_size) / float64(sm.config.UsageWruBytes)))
+
+	mr.select_count++
+	mr.select_size = mr.select_size + reqres_size
+	mr.select_rrus = mr.select_rrus + rrus
+
+	mr.reads_size = mr.reads_size + reqres_size
+	mr.rrus = mr.rrus + rrus
+
+	sm.stats[timebucket][keyspaceTableName] = mr
+	incrementHistogram(timebucket, keyspaceTableName, "reads", rrus)
+	// incrementHistogram(timebucket, keyspaceTableName, "all", rrus)
+}
+
+// LWT is counted according to a regular write but with +1 RRU
+func handleLWT(reqres *RequestResponse, keyspaceTableName string, timebucket time.Time, mr *metricRow) {
+	req_size := reqres.req.raw.Header.BodyLength
+	res_size := reqres.res.Header.BodyLength
+	reqres_size := uint64(req_size) + uint64(res_size)
+	wrus := uint64(math.Ceil(float64(reqres_size) / float64(sm.config.UsageWruBytes)))
+
+	mr.lwt_count++
+	mr.lwt_size = mr.lwt_size + reqres_size
+	mr.lwt_wrus = mr.lwt_wrus + wrus
+	mr.lwt_rrus = mr.lwt_rrus + 1
+
+	mr.writes_size = mr.writes_size + reqres_size
+	mr.wrus = mr.wrus + wrus
+	mr.rrus = mr.rrus + 1
+
+	sm.stats[timebucket][keyspaceTableName] = mr
+	incrementHistogram(timebucket, keyspaceTableName, "writes", wrus)
+	incrementHistogram(timebucket, keyspaceTableName, "reads", 1)
+	// incrementHistogram(timebucket, keyspaceTableName, "all", wrus+1)
+}
+
+func handleINSERT(reqres *RequestResponse, keyspaceTableName string, timebucket time.Time, mr *metricRow) {
+	req_size := reqres.req.raw.Header.BodyLength
+	res_size := reqres.res.Header.BodyLength
+	reqres_size := uint64(req_size) + uint64(res_size)
+	wrus := uint64(math.Ceil(float64(reqres_size) / float64(sm.config.UsageWruBytes)))
+
+	mr.insert_count++
+	mr.insert_size = mr.insert_size + reqres_size
+	mr.insert_wrus = mr.insert_wrus + wrus
+
+	mr.writes_size = mr.writes_size + reqres_size
+	mr.wrus = mr.wrus + wrus
+
+	sm.stats[timebucket][keyspaceTableName] = mr
+	incrementHistogram(timebucket, keyspaceTableName, "writes", wrus)
+}
+
+func handleUPDATE(reqres *RequestResponse, keyspaceTableName string, timebucket time.Time, mr *metricRow) {
+	req_size := reqres.req.raw.Header.BodyLength
+	res_size := reqres.res.Header.BodyLength
+	reqres_size := uint64(req_size) + uint64(res_size)
+	wrus := uint64(math.Ceil(float64(reqres_size) / float64(sm.config.UsageWruBytes)))
+
+	mr.update_count++
+	mr.update_size = mr.update_size + reqres_size
+	mr.update_wrus = mr.update_wrus + wrus
+
+	mr.writes_size = mr.writes_size + reqres_size
+	mr.wrus = mr.wrus + wrus
+
+	sm.stats[timebucket][keyspaceTableName] = mr
+	incrementHistogram(timebucket, keyspaceTableName, "writes", wrus)
+	// incrementHistogram(timebucket, keyspaceTableName, "all", wrus)
+}
+
+func handleDELETE(reqres *RequestResponse, keyspaceTableName string, timebucket time.Time, mr *metricRow) {
+	req_size := reqres.req.raw.Header.BodyLength
+	res_size := reqres.res.Header.BodyLength
+	reqres_size := uint64(req_size) + uint64(res_size)
+	wrus := uint64(math.Ceil(float64(reqres_size) / float64(sm.config.UsageWruBytes)))
+
+	mr.delete_count++
+	mr.delete_size = mr.delete_size + reqres_size
+	mr.delete_wrus = mr.delete_wrus + wrus
+
+	mr.writes_size = mr.writes_size + reqres_size
+	mr.wrus = mr.wrus + wrus
+
+	sm.stats[timebucket][keyspaceTableName] = mr
+	incrementHistogram(timebucket, keyspaceTableName, "writes", wrus)
+	// incrementHistogram(timebucket, keyspaceTableName, "all", wrus)
+}
+
+func isSystemTable(name string) bool {
+	for _, table := range systemTables {
+		if name == table {
+			return true
+		}
+	}
+	return false
+}
+
+func incrementHistogram(timebucket time.Time, keyspaceTableName string, unitType string, units uint64) {
+	// sm.histograms[timestamp]["keyspace.table"]["reads|writes|all"][5|9|234...] = 1232455
+	_, ok := sm.histograms[timebucket][keyspaceTableName][unitType][units]
+	if !ok {
+		if _, ok := sm.histograms[timebucket]; !ok {
+			sm.histograms[timebucket] = map[string]map[string]map[uint64]uint64{}
+		}
+		if _, ok := sm.histograms[timebucket][keyspaceTableName]; !ok {
+			sm.histograms[timebucket][keyspaceTableName] = map[string]map[uint64]uint64{}
+		}
+		if _, ok := sm.histograms[timebucket][keyspaceTableName][unitType]; !ok {
+			sm.histograms[timebucket][keyspaceTableName][unitType] = map[uint64]uint64{}
+		}
+		if _, ok := sm.histograms[timebucket][keyspaceTableName][unitType][units]; !ok {
+			sm.histograms[timebucket][keyspaceTableName][unitType][units] = uint64(0)
+		}
+	}
+	sm.histograms[timebucket][keyspaceTableName][unitType][units]++
+}
+
 func periodicallyFlush(ctx context.Context, config *runConfig, proxy *Proxy) {
 	taskScheduler := chrono.NewDefaultTaskScheduler()
 
 	_, err := taskScheduler.ScheduleWithFixedDelay(func(ctx context.Context) {
 		fmt.Println("Flushing stats")
 		flushCurrentStats(ctx, config, proxy)
+		flushCurrentHistograms(ctx, config, proxy)
 		purgeOldStats()
-	}, 60*time.Second)
+	}, time.Duration(config.UsageFlushSeconds)*time.Second)
 
 	if err == nil {
 		fmt.Println("Scheduled periodic flush")
@@ -137,9 +348,13 @@ func periodicallyFlush(ctx context.Context, config *runConfig, proxy *Proxy) {
 func flushCurrentStats(ctx context.Context, config *runConfig, proxy *Proxy) {
 	// sm.stats[timestamp]["keyspace.table"]["select_count"] = 12345
 	//timebucket := time.Now().Round(time.Hour)
+	// TODO Clone stats to operate on a stable view
+	statementStart := `BEGIN UNLOGGED BATCH `
+	statement := ``
+	statementEnd := ` APPLY BATCH;`
 	for timebucket, timeEntries := range sm.stats {
 		for table_ref, mr := range timeEntries {
-			statement := fmt.Sprintf(`INSERT INTO %s.%s (
+			fragment := fmt.Sprintf(`INSERT INTO %s.%s (
 				time_bucket, client_id, table_ref, 
 				select_count, select_size, select_rrus, 
 				insert_count, insert_size, insert_wrus, 
@@ -166,172 +381,59 @@ func flushCurrentStats(ctx context.Context, config *runConfig, proxy *Proxy) {
 				mr.lwt_count, mr.lwt_size, mr.lwt_rrus, mr.lwt_wrus,
 				mr.index_wrus,
 				mr.writes_size, mr.reads_size, mr.wrus, mr.rrus)
-			statement = strings.ReplaceAll(statement, "\n", "")
-			statement = strings.ReplaceAll(statement, "\t", "")
-			rs, err := proxy.cluster.ExecuteControlQuery(ctx, statement)
-			if err == nil && rs == nil {
-				proxy.logger.Info("Probably saved correctly...  ;-)")
-			} else if err != nil {
-				proxy.logger.Error("Error upserting stats!  Tried to execute:")
-				proxy.logger.Error(statement)
+			fragment = strings.ReplaceAll(fragment, "\n", " ")
+			fragment = strings.ReplaceAll(fragment, "\t", "")
+			statement += fragment
+		}
+	}
+
+	rs, err := proxy.cluster.ExecuteControlQuery(ctx, statementStart+statement+statementEnd)
+	if err == nil && rs == nil {
+		proxy.logger.Info("Stats: Probably saved correctly...  ;-)")
+	} else if err != nil {
+		proxy.logger.Error("Error upserting stats!  Tried to execute:")
+		proxy.logger.Error(statement)
+	}
+
+}
+
+func flushCurrentHistograms(ctx context.Context, config *runConfig, proxy *Proxy) {
+	statementStart := `BEGIN UNLOGGED BATCH `
+	statement := ``
+	statementEnd := ` APPLY BATCH;`
+	for timebucket, timeEntries := range sm.histograms {
+		for table_ref, unit_types := range timeEntries {
+			for unit_type, units_group := range unit_types {
+				for units, unit_count := range units_group {
+					fragment := fmt.Sprintf(`INSERT INTO %s.%s (
+						time_bucket, client_id, table_ref, 
+						unit_type, units, unit_count) 
+					VALUES (
+						%v, %s, '%s', 
+						'%v', %v, %v);`,
+						config.UsageKeyspace, config.UsageHistogramsTable,
+						timebucket.UnixMilli(), sm.id, table_ref,
+						unit_type, units, unit_count)
+					fragment = strings.ReplaceAll(fragment, "\n", "")
+					fragment = strings.ReplaceAll(fragment, "\t", "")
+					statement += fragment
+				}
 			}
 		}
 	}
+
+	rs, err := proxy.cluster.ExecuteControlQuery(ctx, statementStart+statement+statementEnd)
+	if err == nil && rs == nil {
+		proxy.logger.Info("Histograms: Probably saved correctly...  ;-)")
+	} else if err != nil {
+		proxy.logger.Error("Error upserting histograms!  Tried to execute:")
+		proxy.logger.Error(statement)
+	}
+
 }
 
 func purgeOldStats() {
 	// TODO
-}
-
-// to do this "correctly" eventually I'll need to be able to:
-//   - size the parameters into a write or the results of the write...?
-//   - add the size of the writetimes for each non-partition-key field
-//   - don't charge for system tables
-func handleQuery(reqres *RequestResponse) {
-	var keyspaceTableName string
-
-	switch msg := reqres.req.msg.(type) {
-	case *partialQuery:
-		query := msg.query
-		// reqres.req.client.proxy.logger.Info("Response Size:", zap.Int32("message size in bytes", reqres.req.raw.Header.BodyLength))
-		// reqres.req.client.proxy.logger.Info("handling query", zap.String("Query", query))
-
-		re := regexp.MustCompile(`(?i)FROM\s*([a-zA-Z._]*)\s*`)
-		sys_re := regexp.MustCompile(`^system`)
-		tables := re.FindStringSubmatch(query)
-
-		if len(tables) == 0 {
-			return // TODO: do something more interesting here, like panic
-		} else if !strings.Contains(tables[1], ".") {
-			keyspace := strings.ReplaceAll(reqres.req.keyspace, "\"", "")
-			keyspaceTableName = keyspace + "." + tables[1]
-		} else {
-			keyspaceTableName = tables[1]
-		}
-
-		// if system table tracking is off and the working keyspace name starts with "system", skip
-		if !sm.config.TrackSystemUsage && sys_re.MatchString(keyspaceTableName) {
-			return
-		}
-
-		timebucket := time.Now().Round(time.Hour)
-
-		mr, ok := sm.stats[timebucket][keyspaceTableName]
-		if !ok {
-			mr = NewMetricRow()
-			//sm.stats[timebucket] = map[string]*metricRow{}
-			sm.stats[timebucket][keyspaceTableName] = mr
-		}
-
-		if isSystemTable(query) {
-			return
-		} else if match, _ := regexp.MatchString(`(?i)^\s*SELECT`, query); match {
-			handleSELECT(reqres, keyspaceTableName, timebucket, mr)
-		} else if match, _ := regexp.MatchString(`(?i)(IF NOT EXISTS|IF EXISTS)`, query); match {
-			// this case still needs some way to handle UPDATE ... IF ...
-			handleLWT(reqres, keyspaceTableName, timebucket, mr)
-		} else if match, _ := regexp.MatchString(`(?i)^\s*INSERT`, query); match {
-			handleINSERT(reqres, keyspaceTableName, timebucket, mr)
-		} else if match, _ := regexp.MatchString(`(?i)^\s*UPDATE`, query); match {
-			handleUPDATE(reqres, keyspaceTableName, timebucket, mr)
-		} else if match, _ := regexp.MatchString(`(?i)^\s*DELETE`, query); match {
-			handleDELETE(reqres, keyspaceTableName, timebucket, mr)
-		}
-	default:
-		reqres.req.client.proxy.logger.Error("Unknown message type")
-	}
-}
-
-func handleSELECT(reqres *RequestResponse, keyspaceTableName string, timebucket time.Time, mr *metricRow) {
-	req_size := reqres.req.raw.Header.BodyLength
-	res_size := reqres.res.Header.BodyLength
-	reqres_size := uint64(req_size) + uint64(res_size)
-	rrus := uint64(math.Ceil(float64(reqres_size) / 4096))
-
-	mr.select_count++
-	mr.select_size = mr.select_size + reqres_size
-	mr.select_rrus = mr.select_rrus + rrus
-
-	mr.reads_size = mr.reads_size + reqres_size
-	mr.rrus = mr.rrus + rrus
-
-	sm.stats[timebucket][keyspaceTableName] = mr
-}
-
-// LWT is counted according to a regular write but with +1 RRU
-func handleLWT(reqres *RequestResponse, keyspaceTableName string, timebucket time.Time, mr *metricRow) {
-	req_size := reqres.req.raw.Header.BodyLength
-	res_size := reqres.res.Header.BodyLength
-	reqres_size := uint64(req_size) + uint64(res_size)
-	wrus := uint64(math.Ceil(float64(reqres_size) / 1024))
-
-	mr.lwt_count++
-	mr.lwt_size = mr.lwt_size + reqres_size
-	mr.lwt_wrus = mr.lwt_wrus + wrus
-	mr.lwt_rrus = mr.lwt_rrus + 1
-
-	mr.writes_size = mr.writes_size + reqres_size
-	mr.wrus = mr.wrus + wrus
-	mr.rrus = mr.rrus + 1
-
-	sm.stats[timebucket][keyspaceTableName] = mr
-}
-
-func handleINSERT(reqres *RequestResponse, keyspaceTableName string, timebucket time.Time, mr *metricRow) {
-	req_size := reqres.req.raw.Header.BodyLength
-	res_size := reqres.res.Header.BodyLength
-	reqres_size := uint64(req_size) + uint64(res_size)
-	wrus := uint64(math.Ceil(float64(reqres_size) / 1024))
-
-	mr.insert_count++
-	mr.insert_size = mr.insert_size + reqres_size
-	mr.insert_wrus = mr.insert_wrus + wrus
-
-	mr.writes_size = mr.writes_size + reqres_size
-	mr.wrus = mr.wrus + wrus
-
-	sm.stats[timebucket][keyspaceTableName] = mr
-}
-
-func handleUPDATE(reqres *RequestResponse, keyspaceTableName string, timebucket time.Time, mr *metricRow) {
-	req_size := reqres.req.raw.Header.BodyLength
-	res_size := reqres.res.Header.BodyLength
-	reqres_size := uint64(req_size) + uint64(res_size)
-	wrus := uint64(math.Ceil(float64(reqres_size) / 1024))
-
-	mr.update_count++
-	mr.update_size = mr.update_size + reqres_size
-	mr.update_wrus = mr.update_wrus + wrus
-
-	mr.writes_size = mr.writes_size + reqres_size
-	mr.wrus = mr.wrus + wrus
-
-	sm.stats[timebucket][keyspaceTableName] = mr
-}
-
-func handleDELETE(reqres *RequestResponse, keyspaceTableName string, timebucket time.Time, mr *metricRow) {
-	req_size := reqres.req.raw.Header.BodyLength
-	res_size := reqres.res.Header.BodyLength
-	reqres_size := uint64(req_size) + uint64(res_size)
-	wrus := uint64(math.Ceil(float64(reqres_size) / 1024))
-
-	mr.delete_count++
-	mr.delete_size = mr.delete_size + reqres_size
-	mr.delete_wrus = mr.delete_wrus + wrus
-
-	mr.writes_size = mr.writes_size + reqres_size
-	mr.wrus = mr.wrus + wrus
-
-	sm.stats[timebucket][keyspaceTableName] = mr
-}
-
-func isSystemTable(name string) bool {
-	for _, table := range systemTables {
-		if name == table {
-			return true
-		}
-	}
-	return false
 }
 
 // initialize the metrics table if it doesn't exist
@@ -380,6 +482,27 @@ func maybeCreateMetricsTable(ctx context.Context, config *runConfig, proxy *Prox
 	}
 }
 
+// initialize the metrics table if it doesn't exist
+func maybeCreateHistogramsTable(ctx context.Context, config *runConfig, proxy *Proxy) {
+	query := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.%s (
+		time_bucket timestamp,
+		client_id uuid,
+		table_ref text,
+		unit_type text,
+		units bigint,
+		unit_count bigint,
+
+		PRIMARY KEY ((time_bucket), client_id, table_ref, unit_type, units));`, config.UsageKeyspace, config.UsageHistogramsTable)
+
+	rs, err := proxy.cluster.ExecuteControlQuery(ctx, query)
+
+	if err == nil && rs == nil {
+		proxy.logger.Info("Histograms table created or already exists.")
+	} else if err != nil {
+		proxy.logger.Error("Error initializing histogram stats table!")
+	}
+}
+
 // /* UUID code borrowed from go-cql (https://github.com/gocql/) */
 // type UUID [16]byte
 
@@ -405,3 +528,6 @@ func maybeCreateMetricsTable(ctx context.Context, config *runConfig, proxy *Prox
 // 	u[8] |= 0x80 // set to IETF variant
 // 	return u, nil
 // }
+
+// reqres.req.client.proxy.logger.Info("Response Size:", zap.Int32("message size in bytes", reqres.req.raw.Header.BodyLength))
+// reqres.req.client.proxy.logger.Info("handling query", zap.String("Query", query))

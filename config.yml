@@ -6,11 +6,16 @@ rpc-address: 127.0.0.1
 data-center: us-east4
 track-usage: true
 usage-keyspace: qt
-usage-table: astra_usage_stats
-track-system-usage: false
-peers:
-  - rpc-address: 127.0.0.1
-    data-center: us-east4
-  - rpc-address: 127.0.0.2
-    data-center: dc-2
+# USAGE TRACKING DEFAULTS
+# usage-table: astra_usage_stats
+# usage-track-system: false
+# usage-rru-bytes: 4096
+# usage-wru-bytes: 1024
+# usage-flush-seconds: 60
+# usage-histograms-table: astra_usage_histograms
+# peers:
+#   - rpc-address: 127.0.0.1
+#     data-center: us-east4
+#   - rpc-address: 127.0.0.2
+#     data-center: dc-2
 # ...
