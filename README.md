@@ -11,6 +11,7 @@
   - [Locally build and run](https://github.com/qzg/cql-proxy#locally-build-and-run)
   - [Run a `cql-proxy` docker image](https://github.com/qzg/cql-proxy#run-a-cql-proxy-docker-image)
   - [Use Kubernetes](https://github.com/qzg/cql-proxy#use-kubernetes)
+- [Tracking Metrics](https://github.com/qzg/cql-proxy#track-metrics)
 - [Known issues](https://github.com/qzg/cql-proxy#known-issues)
     - [Token-aware load balancing](https://github.com/qzg/cql-proxy#token-aware-load-balancing)
 
@@ -73,7 +74,16 @@ Flags:
       --rpc-address=STRING                                Address to advertise in the 'system.local' table for 'rpc_address'. It must be set if configuring peer proxies
                                                           ($RPC_ADDRESS)
       --data-center=STRING                                Data center to use in system tables ($DATA_CENTER)
-      --tokens=TOKENS,...                                 Tokens to use in the system tables. It's not recommended ($TOKENS)
+      --tokens=TOKENS,...                                 Tokens to use in the system tables. Not recommended ($TOKENS)
+      --track-usage                                       Enable usage tracking for Astra Serverless estimation ($TRACK_USAGE).
+      --usage-track-system                                Include system tables in usage tracking ($USAGE_TRACK_SYSTEM).
+      --usage-keyspace=STRING                             Specify the keyspace where the usage table will be created ($USAGE_KEYSPACE).
+      --usage-rru-bytes=4096                              Specify the size of a read-request unit ($USAGE_RRU_BYTES)
+      --usage-wru-bytes=1024                              Specify the size of a write-request unit ($USAGE_WRU_BYTES)
+      --usage-flush-seconds=60                            Specify how frequently the accumulated stats should be made durable ($USAGE_FLUSH_SECONDS)
+      --usage-table="astra_usage_stats"                   Specify the name of the table where usage data will be stored. Defaults to astra_usage_stats ($USAGE_TABLE).
+      --usage-histograms-table="astra_usage_histograms"   Specify the name of the table where usage histograms will be stored. Defaults to astra_usage_histograms
+                                                          ($USAGE_HISTOGRAMS_TABLE).
 ```
 
 To pass configuration to `cql-proxy`, either command-line flags, environment variables, or a configuration file can be used. Using the `docker` method as an example, the following samples show how the token and database ID are defined with each method.
@@ -279,6 +289,19 @@ Using Kubernetes with `cql-proxy` requires a number of steps:
     ```sh
     kubectl logs <deployment-name>
     ```
+
+## Track Metrics
+CQL-Proxy can track and summarize counts and latency of queries/statements passing through it.  This can make it useful for diagnostics or to quantify your traffic in the way that DBaaS providers, such as [DataStax Astra](https://www.datastax.com/products/datastax-astra) do.  When you enable --track-usage and specify --usage-keyspace, cql-proxy will create two tables in the designated keyspace.  By default they will be named astra_usage_stats and astra_usage_histograms.
+
+NOTE: The user/token must have sufficient permissions to create these tables.  
+
+DataStax Astra counts each 4KB of a read request and each 1KB of a write request as a "read request unit" and a "write request unit" respectively.  These unit sizes are configurable with the --usage-rru-bytes and --usage-wru-bytes options.  
+
+CQL Proxy will accumulate metrics internally and flush them to the tables every 60 seconds by default (configurable with the --usage-flush-seconds option).  The data model of the stats and histograms tables will track metrics per table, per hour. 
+
+The metrics tracking feature is not intended to run indefinitely.  It is intended to run for days up to a few months in order to collect data for a representative usage pattern and then it should be disabled and the data extracted and analyzed.  
+
+
 ## Known issues
 
 ### Token-aware load balancing
