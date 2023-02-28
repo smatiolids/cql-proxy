@@ -528,8 +528,16 @@ func flushCurrentLatencies(ctx context.Context, config *runConfig, proxy *Proxy)
 
 }
 
+// purge in-memory stats older than two hours
 func purgeOldStats() {
-	// TODO
+	three_hours_ago := time.Now().Add(-3 * time.Hour)
+	for timebucket, _ := range sm.Stats {
+		if timebucket.Before(three_hours_ago) {
+			delete(sm.Stats, timebucket)
+			delete(sm.Counts, timebucket)
+			delete(sm.Latencies, timebucket)
+		}
+	}
 }
 
 // initialize the metrics table if it doesn't exist
