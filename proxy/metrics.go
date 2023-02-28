@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/google/uuid"
 	"github.com/procyon-projects/chrono"
 	"go.uber.org/zap"
@@ -70,16 +71,21 @@ func NewMetricRow() *metricRow {
 // sm.stats[timestamp]["keyspace.table"]["select_count"] = 12345
 type statsrecord map[time.Time]map[string]*metricRow
 
-// sm.histograms[timestamp]["keyspace.table"]["reads|writes|all"][5|9|234...] = 1232455
-type histogram map[time.Time]map[string]map[string]map[uint64]uint64
+// sm.counts[timestamp]["keyspace.table"]["reads|writes|all"][5|9|234...] = 1232455
+type counts map[time.Time]map[string]map[string]map[uint64]uint64
+
+// sm.latencies[timestamp]["keyspace.table"][reads|writes] = hdrhistogram.Histogram
+type latencies map[time.Time]map[string]map[string]*hdrhistogram.Histogram
 
 type statsManager struct {
 	id          string
 	config      *runConfig
-	stats       statsrecord
-	histograms  histogram
+	Stats       statsrecord
+	Counts      counts
+	Latencies   latencies
 	ctx         context.Context
 	MessageFeed chan *RequestResponse
+	// MinMaxChan  chan TKMMsg
 }
 
 var (
@@ -89,24 +95,27 @@ var (
 
 var systemTables = []string{"local", "peers", "peers_v2", "schema_keyspaces", "schema_columnfamilies", "schema_columns", "schema_usertypes"}
 
-func NewStatsManager(ctx context.Context, config *runConfig, proxy *Proxy) (*statsManager, error) {
+func SingletonStatsManager(ctx context.Context, config *runConfig, proxy *Proxy) (*statsManager, error) {
 	var err error
 	if config.TrackUsage {
 		once.Do(func() {
-			timebucket := time.Now().Round(time.Hour)
+			timebucket := time.Now().Truncate(time.Hour)
 			sm = &statsManager{
 				id:          uuid.NewString(),
 				config:      config,
-				stats:       map[time.Time]map[string]*metricRow{},
-				histograms:  map[time.Time]map[string]map[string]map[uint64]uint64{},
+				Stats:       map[time.Time]map[string]*metricRow{},
+				Counts:      map[time.Time]map[string]map[string]map[uint64]uint64{},
+				Latencies:   map[time.Time]map[string]map[string]*hdrhistogram.Histogram{},
 				ctx:         ctx,
 				MessageFeed: make(chan *RequestResponse, 1024),
+				// MinMaxChan:  make(chan TKMMsg),
 			}
-			sm.stats[timebucket] = map[string]*metricRow{}
-			sm.histograms[timebucket] = map[string]map[string]map[uint64]uint64{}
+			sm.Stats[timebucket] = map[string]*metricRow{}
+			sm.Counts[timebucket] = map[string]map[string]map[uint64]uint64{}
 
 			maybeCreateMetricsTable(ctx, config, proxy)
 			maybeCreateHistogramsTable(ctx, config, proxy)
+			// go trackMinMax(ctx)
 			go periodicallyFlush(ctx, config, proxy)
 			go listen()
 		})
@@ -128,12 +137,47 @@ func listen() {
 	}
 }
 
+// track minimum and maximum throughput per second
+// func trackMinMax(ctx context.Context) {
+// 	var minMaxCounters map[string]map[string]int64
+// 	ticker := time.NewTicker(time.Second)
+// 	defer ticker.Stop()
+// 	for {
+// 		select {
+// 		case t := <-ticker.C:
+// 			// reset the counter every second
+// 			fmt.Println("Current time: ", t)
+
+// 			minPerSecondCounter = -1
+// 			maxPerSecondCounter = 0
+// 		case val := <-sm.MinMaxChan:
+// 			mr := getMetricRow(val.timebucket, val.keyspaceTableName)
+// 			if val.ns > maxPerSecondCounter {
+// 				maxPerSecondCounter = val.ns
+// 			}
+// 			if minPerSecondCounter == -1 || val.ns < minPerSecondCounter {
+// 				minPerSecondCounter = val.ns
+// 			}
+// 		case <-sm.ctx.Done():
+// 			return
+// 		}
+// 	}
+// }
+
 // to do this "correctly" eventually I'll need to be able to:
 //   - size the parameters into a write or the results of the write...?
 //   - add the size of the writetimes for each non-partition-key field
 //   - don't charge for system tables
+//
+// for latencies, we don't need a histogram; we need specific percentiles:
+// 50th, 75th, 90th, 95th, 99th, 99.99, and max, per table, per window
+// these are per second measurements.  e.g. what is the average latency across all operations in the reported time window
+// Somewhat unrelated, I also need to report on throughput.  Operations per second, averaged over some period of time.  Maybe percentiles make sense
+// here too?  That is, during the one hour reporting window the average throughput per second was X; the peak per second was Y
 func handleQuery(reqres *RequestResponse) {
 	var keyspaceTableName, query string
+
+	reqres.req.client.proxy.logger.Debug("Time Tracker: ", zap.Duration("Response Time", reqres.req.rt))
 
 	switch msg := reqres.req.msg.(type) {
 	case *partialExecute:
@@ -145,7 +189,7 @@ func handleQuery(reqres *RequestResponse) {
 	case *partialQuery:
 		query = msg.query
 	case *partialBatch:
-		reqres.req.client.proxy.logger.Info("partialBatch not currently implemented")
+		reqres.req.client.proxy.logger.Debug("partialBatch not currently implemented")
 	default:
 		reqres.req.client.proxy.logger.Error("Unknown message type")
 		fmt.Println(msg)
@@ -156,13 +200,13 @@ func handleQuery(reqres *RequestResponse) {
 		// UPDATE keyspace.table [USING] SET field=value, ...
 		// SELECT (*|fields|DISTINCT partition) FROM keyspace.table WHERE predicate=value AND ...
 		// DELETE [(fields...)] FROM keyspace.table [USING] WHERE predicate=value AND ...
-		find_tables := regexp.MustCompile(`(?i)(INTO|UPDATE|FROM)\s*([a-zA-Z._]*)\s*`)
+		find_tables := regexp.MustCompile(`(?i)(INTO|UPDATE|FROM)\s*([a-zA-Z0-9._]*)\s*`)
 		sys_re := regexp.MustCompile(`^system`)
 		// query = strings.ReplaceAll(query, "\n", " ")
 		tables := find_tables.FindStringSubmatch(query)
 
 		if len(tables) == 0 {
-			reqres.req.client.proxy.logger.Info("Encountered an unhandled query/statement", zap.String("query:", query))
+			reqres.req.client.proxy.logger.Debug("Encountered an unhandled query/statement", zap.String("query:", query))
 			return // TODO: do something more interesting here, like panic
 		} else if !strings.Contains(tables[2], ".") {
 			// if there's no dot in the table name, prepend the keyspace and a dot to the table name
@@ -177,17 +221,9 @@ func handleQuery(reqres *RequestResponse) {
 			return
 		}
 
-		timebucket := time.Now().Round(time.Hour)
-		// timebucket := time.Now().Round(time.Minute) // for testing
-
-		mr, ok := sm.stats[timebucket][keyspaceTableName]
-		if !ok {
-			if _, ok := sm.stats[timebucket]; !ok {
-				sm.stats[timebucket] = map[string]*metricRow{}
-			}
-			mr = NewMetricRow()
-			sm.stats[timebucket][keyspaceTableName] = mr
-		}
+		// round down to the nearest hour
+		timebucket := time.Now().Truncate(time.Hour)
+		mr := getMetricRow(timebucket, keyspaceTableName)
 
 		if isSystemTable(query) {
 			return
@@ -204,7 +240,18 @@ func handleQuery(reqres *RequestResponse) {
 			handleDELETE(reqres, keyspaceTableName, timebucket, mr)
 		}
 	}
+}
 
+func getMetricRow(timebucket time.Time, keyspaceTableName string) *metricRow {
+	mr, ok := sm.Stats[timebucket][keyspaceTableName]
+	if !ok {
+		if _, ok := sm.Stats[timebucket]; !ok {
+			sm.Stats[timebucket] = map[string]*metricRow{}
+		}
+		mr = NewMetricRow()
+		sm.Stats[timebucket][keyspaceTableName] = mr
+	}
+	return mr
 }
 
 func handleSELECT(reqres *RequestResponse, keyspaceTableName string, timebucket time.Time, mr *metricRow) {
@@ -220,9 +267,8 @@ func handleSELECT(reqres *RequestResponse, keyspaceTableName string, timebucket 
 	mr.reads_size = mr.reads_size + reqres_size
 	mr.rrus = mr.rrus + rrus
 
-	sm.stats[timebucket][keyspaceTableName] = mr
-	incrementHistogram(timebucket, keyspaceTableName, "reads", rrus)
-	// incrementHistogram(timebucket, keyspaceTableName, "all", rrus)
+	incrementCounts(timebucket, keyspaceTableName, "reads", rrus)
+	recordLatency(timebucket, keyspaceTableName, "read_lat", reqres.req.rt)
 }
 
 // LWT is counted according to a regular write but with +1 RRU
@@ -241,10 +287,9 @@ func handleLWT(reqres *RequestResponse, keyspaceTableName string, timebucket tim
 	mr.wrus = mr.wrus + wrus
 	mr.rrus = mr.rrus + 1
 
-	sm.stats[timebucket][keyspaceTableName] = mr
-	incrementHistogram(timebucket, keyspaceTableName, "writes", wrus)
-	incrementHistogram(timebucket, keyspaceTableName, "reads", 1)
-	// incrementHistogram(timebucket, keyspaceTableName, "all", wrus+1)
+	incrementCounts(timebucket, keyspaceTableName, "writes", wrus)
+	incrementCounts(timebucket, keyspaceTableName, "reads", 1)
+	recordLatency(timebucket, keyspaceTableName, "write_lat", reqres.req.rt)
 }
 
 func handleINSERT(reqres *RequestResponse, keyspaceTableName string, timebucket time.Time, mr *metricRow) {
@@ -260,8 +305,8 @@ func handleINSERT(reqres *RequestResponse, keyspaceTableName string, timebucket 
 	mr.writes_size = mr.writes_size + reqres_size
 	mr.wrus = mr.wrus + wrus
 
-	sm.stats[timebucket][keyspaceTableName] = mr
-	incrementHistogram(timebucket, keyspaceTableName, "writes", wrus)
+	incrementCounts(timebucket, keyspaceTableName, "writes", wrus)
+	recordLatency(timebucket, keyspaceTableName, "write_lat", reqres.req.rt)
 }
 
 func handleUPDATE(reqres *RequestResponse, keyspaceTableName string, timebucket time.Time, mr *metricRow) {
@@ -277,9 +322,8 @@ func handleUPDATE(reqres *RequestResponse, keyspaceTableName string, timebucket 
 	mr.writes_size = mr.writes_size + reqres_size
 	mr.wrus = mr.wrus + wrus
 
-	sm.stats[timebucket][keyspaceTableName] = mr
-	incrementHistogram(timebucket, keyspaceTableName, "writes", wrus)
-	// incrementHistogram(timebucket, keyspaceTableName, "all", wrus)
+	incrementCounts(timebucket, keyspaceTableName, "writes", wrus)
+	recordLatency(timebucket, keyspaceTableName, "write_lat", reqres.req.rt)
 }
 
 func handleDELETE(reqres *RequestResponse, keyspaceTableName string, timebucket time.Time, mr *metricRow) {
@@ -295,9 +339,8 @@ func handleDELETE(reqres *RequestResponse, keyspaceTableName string, timebucket 
 	mr.writes_size = mr.writes_size + reqres_size
 	mr.wrus = mr.wrus + wrus
 
-	sm.stats[timebucket][keyspaceTableName] = mr
-	incrementHistogram(timebucket, keyspaceTableName, "writes", wrus)
-	// incrementHistogram(timebucket, keyspaceTableName, "all", wrus)
+	incrementCounts(timebucket, keyspaceTableName, "writes", wrus)
+	recordLatency(timebucket, keyspaceTableName, "write_lat", reqres.req.rt)
 }
 
 func isSystemTable(name string) bool {
@@ -309,38 +352,55 @@ func isSystemTable(name string) bool {
 	return false
 }
 
-func incrementHistogram(timebucket time.Time, keyspaceTableName string, unitType string, units uint64) {
-	// sm.histograms[timestamp]["keyspace.table"]["reads|writes|all"][5|9|234...] = 1232455
-	_, ok := sm.histograms[timebucket][keyspaceTableName][unitType][units]
+func recordLatency(timebucket time.Time, keyspaceTableName string, unitType string, elapsed time.Duration) {
+	_, ok := sm.Latencies[timebucket][keyspaceTableName][unitType]
 	if !ok {
-		if _, ok := sm.histograms[timebucket]; !ok {
-			sm.histograms[timebucket] = map[string]map[string]map[uint64]uint64{}
+		if _, ok := sm.Latencies[timebucket]; !ok {
+			sm.Latencies[timebucket] = map[string]map[string]*hdrhistogram.Histogram{}
 		}
-		if _, ok := sm.histograms[timebucket][keyspaceTableName]; !ok {
-			sm.histograms[timebucket][keyspaceTableName] = map[string]map[uint64]uint64{}
+		if _, ok := sm.Latencies[timebucket][keyspaceTableName]; !ok {
+			sm.Latencies[timebucket][keyspaceTableName] = map[string]*hdrhistogram.Histogram{}
 		}
-		if _, ok := sm.histograms[timebucket][keyspaceTableName][unitType]; !ok {
-			sm.histograms[timebucket][keyspaceTableName][unitType] = map[uint64]uint64{}
-		}
-		if _, ok := sm.histograms[timebucket][keyspaceTableName][unitType][units]; !ok {
-			sm.histograms[timebucket][keyspaceTableName][unitType][units] = uint64(0)
+		if _, ok := sm.Latencies[timebucket][keyspaceTableName][unitType]; !ok {
+			sm.Latencies[timebucket][keyspaceTableName][unitType] = hdrhistogram.New(1, 30000000000, 3)
 		}
 	}
-	sm.histograms[timebucket][keyspaceTableName][unitType][units]++
+	sm.Latencies[timebucket][keyspaceTableName][unitType].RecordValue(elapsed.Nanoseconds())
+}
+
+func incrementCounts(timebucket time.Time, keyspaceTableName string, unitType string, units uint64) {
+	// sm.histograms[timestamp]["keyspace.table"]["reads|writes|all"][5|9|234...] = 1232455
+	_, ok := sm.Counts[timebucket][keyspaceTableName][unitType][units]
+	if !ok {
+		if _, ok := sm.Counts[timebucket]; !ok {
+			sm.Counts[timebucket] = map[string]map[string]map[uint64]uint64{}
+		}
+		if _, ok := sm.Counts[timebucket][keyspaceTableName]; !ok {
+			sm.Counts[timebucket][keyspaceTableName] = map[string]map[uint64]uint64{}
+		}
+		if _, ok := sm.Counts[timebucket][keyspaceTableName][unitType]; !ok {
+			sm.Counts[timebucket][keyspaceTableName][unitType] = map[uint64]uint64{}
+		}
+		if _, ok := sm.Counts[timebucket][keyspaceTableName][unitType][units]; !ok {
+			sm.Counts[timebucket][keyspaceTableName][unitType][units] = uint64(0)
+		}
+	}
+	sm.Counts[timebucket][keyspaceTableName][unitType][units]++
 }
 
 func periodicallyFlush(ctx context.Context, config *runConfig, proxy *Proxy) {
 	taskScheduler := chrono.NewDefaultTaskScheduler()
 
 	_, err := taskScheduler.ScheduleWithFixedDelay(func(ctx context.Context) {
-		fmt.Println("Flushing stats")
+		proxy.logger.Debug("Flushing stats")
 		flushCurrentStats(ctx, config, proxy)
-		flushCurrentHistograms(ctx, config, proxy)
+		flushCurrentCounts(ctx, config, proxy)
+		flushCurrentLatencies(ctx, config, proxy)
 		purgeOldStats()
 	}, time.Duration(config.UsageFlushSeconds)*time.Second)
 
 	if err == nil {
-		fmt.Println("Scheduled periodic flush")
+		proxy.logger.Debug("Scheduled periodic flush")
 	}
 }
 
@@ -351,7 +411,7 @@ func flushCurrentStats(ctx context.Context, config *runConfig, proxy *Proxy) {
 	statementStart := `BEGIN UNLOGGED BATCH `
 	statement := ``
 	statementEnd := ` APPLY BATCH;`
-	for timebucket, timeEntries := range sm.stats {
+	for timebucket, timeEntries := range sm.Stats {
 		for table_ref, mr := range timeEntries {
 			fragment := fmt.Sprintf(`INSERT INTO %s.%s (
 				time_bucket, client_id, table_ref, 
@@ -361,7 +421,7 @@ func flushCurrentStats(ctx context.Context, config *runConfig, proxy *Proxy) {
 				delete_count, delete_size, delete_wrus, 
 				lwt_count, lwt_size, lwt_rrus, lwt_wrus, 
 				index_wrus, 
-				writes_size, reads_size, wrus, rrus) 
+				writes_size, reads_size, wrus, rrus)
 			VALUES (
 				%v, %s, '%s', 
 				%v, %v, %v, 
@@ -380,6 +440,7 @@ func flushCurrentStats(ctx context.Context, config *runConfig, proxy *Proxy) {
 				mr.lwt_count, mr.lwt_size, mr.lwt_rrus, mr.lwt_wrus,
 				mr.index_wrus,
 				mr.writes_size, mr.reads_size, mr.wrus, mr.rrus)
+
 			fragment = strings.ReplaceAll(fragment, "\n", " ")
 			fragment = strings.ReplaceAll(fragment, "\t", "")
 			statement += fragment
@@ -389,7 +450,7 @@ func flushCurrentStats(ctx context.Context, config *runConfig, proxy *Proxy) {
 
 	rs, err := proxy.cluster.ExecuteControlQuery(ctx, statementStart+statement+statementEnd)
 	if err == nil && rs == nil {
-		proxy.logger.Info("Stats: Probably saved correctly...  ;-)")
+		proxy.logger.Debug("Stats: SAVED")
 	} else if err != nil {
 		proxy.logger.Error("Error upserting stats!  Tried to execute:")
 		proxy.logger.Error(statement)
@@ -397,11 +458,11 @@ func flushCurrentStats(ctx context.Context, config *runConfig, proxy *Proxy) {
 
 }
 
-func flushCurrentHistograms(ctx context.Context, config *runConfig, proxy *Proxy) {
+func flushCurrentCounts(ctx context.Context, config *runConfig, proxy *Proxy) {
 	statementStart := `BEGIN UNLOGGED BATCH `
 	statement := ``
 	statementEnd := ` APPLY BATCH;`
-	for timebucket, timeEntries := range sm.histograms {
+	for timebucket, timeEntries := range sm.Counts {
 		for table_ref, unit_types := range timeEntries {
 			for unit_type, units_group := range unit_types {
 				for units, unit_count := range units_group {
@@ -424,9 +485,44 @@ func flushCurrentHistograms(ctx context.Context, config *runConfig, proxy *Proxy
 
 	rs, err := proxy.cluster.ExecuteControlQuery(ctx, statementStart+statement+statementEnd)
 	if err == nil && rs == nil {
-		proxy.logger.Info("Histograms: Probably saved correctly...  ;-)")
+		proxy.logger.Debug("Counts: SAVED")
 	} else if err != nil {
-		proxy.logger.Error("Error upserting histograms!  Tried to execute:")
+		proxy.logger.Error("Error upserting counts!  Tried to execute:")
+		proxy.logger.Error(statement)
+	}
+
+}
+
+func flushCurrentLatencies(ctx context.Context, config *runConfig, proxy *Proxy) {
+	statementStart := `BEGIN UNLOGGED BATCH `
+	statement := ``
+	statementEnd := ` APPLY BATCH;`
+	for timebucket, timeEntries := range sm.Latencies {
+		for table_ref, unit_types := range timeEntries {
+			for unit_type, histogram := range unit_types {
+				for units, units_value := range histogram.ValueAtPercentiles([]float64{50.0, 75.0, 95.0, 99.0, 99.9, 99.99, 100.0}) {
+					fragment := fmt.Sprintf(`INSERT INTO %s.%s (
+						time_bucket, client_id, table_ref, 
+						unit_type, units, unit_count) 
+					VALUES (
+						%v, %s, '%s', 
+						'%v', %v, %v);`,
+						config.UsageKeyspace, config.UsageHistogramsTable,
+						timebucket.UnixMilli(), sm.id, table_ref,
+						unit_type, units, units_value)
+					fragment = strings.ReplaceAll(fragment, "\n", "")
+					fragment = strings.ReplaceAll(fragment, "\t", "")
+					statement += fragment
+				}
+			}
+		}
+	}
+
+	rs, err := proxy.cluster.ExecuteControlQuery(ctx, statementStart+statement+statementEnd)
+	if err == nil && rs == nil {
+		proxy.logger.Debug("Latency Histograms: SAVED")
+	} else if err != nil {
+		proxy.logger.Error("Error upserting latency histograms!  Tried to execute:")
 		proxy.logger.Error(statement)
 	}
 
@@ -470,13 +566,13 @@ func maybeCreateMetricsTable(ctx context.Context, config *runConfig, proxy *Prox
 		reads_size bigint,
 		wrus bigint,
 		rrus bigint,
-
+		
 		PRIMARY KEY ((time_bucket), client_id, table_ref));`, config.UsageKeyspace, config.UsageTable)
 
 	rs, err := proxy.cluster.ExecuteControlQuery(ctx, query)
 
 	if err == nil && rs == nil {
-		proxy.logger.Info("Stats table created or already exists.")
+		proxy.logger.Debug("Stats table created or already exists.")
 	} else if err != nil {
 		proxy.logger.Error("Error initializing usage stats table!")
 	}
@@ -489,7 +585,7 @@ func maybeCreateHistogramsTable(ctx context.Context, config *runConfig, proxy *P
 		client_id uuid,
 		table_ref text,
 		unit_type text,
-		units bigint,
+		units float,
 		unit_count bigint,
 
 		PRIMARY KEY ((time_bucket), client_id, table_ref, unit_type, units));`, config.UsageKeyspace, config.UsageHistogramsTable)
@@ -497,7 +593,7 @@ func maybeCreateHistogramsTable(ctx context.Context, config *runConfig, proxy *P
 	rs, err := proxy.cluster.ExecuteControlQuery(ctx, query)
 
 	if err == nil && rs == nil {
-		proxy.logger.Info("Histograms table created or already exists.")
+		proxy.logger.Debug("Histograms table created or already exists.")
 	} else if err != nil {
 		proxy.logger.Error("Error initializing histogram stats table!")
 	}

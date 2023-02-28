@@ -292,7 +292,7 @@ func (c *runConfig) listenAndServe(p *Proxy, mux *http.ServeMux, ctx context.Con
 		return err
 	}
 
-	p.StatsManager, err = NewStatsManager(ctx, c, p)
+	p.StatsManager, err = SingletonStatsManager(ctx, c, p)
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ module github.com/qzg/cql-proxy
 go 1.16
 
 require (
+	github.com/HdrHistogram/hdrhistogram-go v1.1.2 // indirect
 	github.com/alecthomas/kong v0.2.17
 	github.com/datastax/astra-client-go/v2 v2.2.9 // indirect
 	github.com/datastax/go-cassandra-native-protocol v0.0.0-20211124104234-f6aea54fa801

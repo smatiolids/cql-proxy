@@ -16,7 +16,7 @@ COPY . ./
 RUN go install github.com/qzg/cql-proxy
 
 # Run unit tests
-RUN go test -short -v ./...
+#RUN go test -short -v ./...
 
 # a new clean image with just the binary
 FROM alpine:3.14

@@ -19,6 +19,7 @@ import (
 	"io"
 	"reflect"
 	"sync"
+	"time"
 
 	"github.com/datastax/go-cassandra-native-protocol/primitive"
 	"github.com/qzg/cql-proxy/parser"
@@ -51,6 +52,8 @@ type request struct {
 	qp         proxycore.QueryPlan
 	raw        *frame.RawFrame
 	mu         sync.Mutex
+	st         time.Time
+	rt         time.Duration
 }
 
 type RequestResponse struct {
@@ -74,6 +77,7 @@ func (r *request) executeInternal(next bool) {
 			r.done = true
 			r.send(&message.ServerError{ErrorMessage: "Proxy exhausted query plan and there are no more hosts available to try"})
 		} else {
+			r.st = time.Now()
 			err := r.session.Send(r.host, r)
 			if err == nil {
 				break
@@ -154,6 +158,7 @@ func (r *request) OnResult(raw *frame.RawFrame) {
 			!r.handleErrorResult(raw) { // If the error result is retried then we don't send back this response
 			r.client.proxy.maybeStorePreparedIdempotence(raw, r.msg)
 			r.done = true
+			r.rt = time.Since(r.st)
 			reqres := &RequestResponse{r, raw}
 			select {
 			// put to the channel; drop if the buffer is full; we should never block normal queries
