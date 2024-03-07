@@ -30,8 +30,8 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/datastax/go-cassandra-native-protocol/primitive"
-	"github.com/qzg/cql-proxy/astra"
-	"github.com/qzg/cql-proxy/proxycore"
+	"github.com/smatiolids/cql-proxy/astra"
+	"github.com/smatiolids/cql-proxy/proxycore"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 )
@@ -68,6 +68,7 @@ type runConfig struct {
 	Tokens               []string      `yaml:"tokens" help:"Tokens to use in the system tables. It's not recommended" env:"TOKENS"`
 	Peers                []PeerConfig  `yaml:"peers" kong:"-"` // Not available as a CLI flag
 	TrackUsage           bool          `yaml:"track-usage" help:"Enable usage tracking for Astra Serverless estimation." env:"TRACK_USAGE" default:"false"`
+	WriteToStreaming     bool          `yaml:"write-to-streaming" help:"Enable posting the data write requests to Streaming." env:"WRITE_TO_STREAMING" default:"false"`
 	UsageTrackSystem     bool          `yaml:"usage-track-system" help:"Include system tables in usage tracking." env:"USAGE_TRACK_SYSTEM" default:"false"`
 	UsageKeyspace        string        `yaml:"usage-keyspace" help:"Specify the keyspace where the usage table will be created." env:"USAGE_KEYSPACE"`
 	UsageRruBytes        int           `yaml:"usage-rru-bytes" help:"Specify the size of a read-request unit" default:"4096" env:"USAGE_RRU_BYTES"`
@@ -90,7 +91,7 @@ func Run(ctx context.Context, args []string) int {
 
 	var cliCtx *kong.Context
 	if cliCtx, err = parser.Parse(args); err != nil {
-		parser.Errorf("error parsing flags: %v", err)
+		parser.Errorf("error parsing flags X: %v", err)
 		return 1
 	}
 
@@ -162,6 +163,11 @@ func Run(ctx context.Context, args []string) int {
 
 	if cfg.TrackUsage && len(cfg.UsageKeyspace) == 0 {
 		cliCtx.Errorf("If track-usage is enabled, you must specify a keyspace where the usage table will be created.")
+		return 1
+	}
+
+	if cfg.WriteToStreaming && len(cfg.UsageKeyspace) == 0 {
+		cliCtx.Errorf("If write-to-streaming is enabled, you must specify a keyspace where the usage table will be created.")
 		return 1
 	}
 
@@ -292,7 +298,7 @@ func (c *runConfig) listenAndServe(p *Proxy, mux *http.ServeMux, ctx context.Con
 		return err
 	}
 
-	p.StatsManager, err = SingletonStatsManager(ctx, c, p)
+	p.StreamingManager, err = SingletonStreamingManager(ctx, c, p)
 	if err != nil {
 		return err
 	}

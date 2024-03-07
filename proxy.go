@@ -19,7 +19,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/qzg/cql-proxy/proxy"
+	"github.com/smatiolids/cql-proxy/proxy"
 )
 
 func main() {

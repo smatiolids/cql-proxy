@@ -33,8 +33,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qzg/cql-proxy/parser"
-	"github.com/qzg/cql-proxy/proxycore"
+	"github.com/smatiolids/cql-proxy/parser"
+	"github.com/smatiolids/cql-proxy/proxycore"
 
 	"github.com/datastax/go-cassandra-native-protocol/datatype"
 	"github.com/datastax/go-cassandra-native-protocol/frame"
@@ -109,7 +109,7 @@ type Proxy struct {
 	localNode           *node
 	nodes               []*node
 	onceUsingGraphLog   sync.Once
-	StatsManager        *statsManager
+	StreamingManager    *streamingManager
 }
 
 type node struct {

@@ -5,3 +5,5 @@ config.yml
 config2.yml
 secure-connect-cvm.zip
 cvm-token.json
+
+start-*.sh

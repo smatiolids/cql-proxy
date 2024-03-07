@@ -22,8 +22,8 @@ import (
 	"time"
 
 	"github.com/datastax/go-cassandra-native-protocol/primitive"
-	"github.com/qzg/cql-proxy/parser"
-	"github.com/qzg/cql-proxy/proxycore"
+	"github.com/smatiolids/cql-proxy/parser"
+	"github.com/smatiolids/cql-proxy/proxycore"
 
 	"github.com/datastax/go-cassandra-native-protocol/frame"
 	"github.com/datastax/go-cassandra-native-protocol/message"
@@ -162,7 +162,7 @@ func (r *request) OnResult(raw *frame.RawFrame) {
 			reqres := &RequestResponse{r, raw}
 			select {
 			// put to the channel; drop if the buffer is full; we should never block normal queries
-			case r.client.proxy.StatsManager.MessageFeed <- reqres:
+			case r.client.proxy.StreamingManager.MessageFeed <- reqres:
 			default:
 			}
 			r.sendRaw(raw)

@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qzg/cql-proxy/proxycore"
+	"github.com/smatiolids/cql-proxy/proxycore"
 )
 
 type astraResolver struct {

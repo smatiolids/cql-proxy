@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qzg/cql-proxy/proxycore"
+	"github.com/smatiolids/cql-proxy/proxycore"
 
 	"github.com/datastax/go-cassandra-native-protocol/datatype"
 	"github.com/datastax/go-cassandra-native-protocol/frame"

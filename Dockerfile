@@ -13,7 +13,7 @@ RUN go mod download
 COPY . ./
 
 # Build and install binary
-RUN go install github.com/qzg/cql-proxy
+RUN go install github.com/smatiolids/cql-proxy
 
 # Run unit tests
 #RUN go test -short -v ./...

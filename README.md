@@ -1,19 +1,19 @@
 # cql-proxy
 
-[![GitHub Action](https://github.com/qzg/cql-proxy/actions/workflows/test.yml/badge.svg)](https://github.com/qzg/cql-proxy/actions/workflows/test.yml) [![Go Report Card](https://goreportcard.com/badge/github.com/qzg/cql-proxy)](https://goreportcard.com/report/github.com/qzg/cql-proxy)
+[![GitHub Action](https://github.com/smatiolids/cql-proxy/actions/workflows/test.yml/badge.svg)](https://github.com/smatiolids/cql-proxy/actions/workflows/test.yml) [![Go Report Card](https://goreportcard.com/badge/github.com/smatiolids/cql-proxy)](https://goreportcard.com/report/github.com/smatiolids/cql-proxy)
 
 ## Table of Contents
 
-- [What is the cql-proxy?](https://github.com/qzg/cql-proxy#what-is-cqlproxy)
-- [When to use cql-proxy](https://github.com/qzg/cql-proxy#when-to-use-cql-proxy)
-- [Configuration](https://github.com/qzg/cql-proxy#configuration)
-- [Getting started](https://github.com/qzg/cql-proxy#getting-started)
-  - [Locally build and run](https://github.com/qzg/cql-proxy#locally-build-and-run)
-  - [Run a `cql-proxy` docker image](https://github.com/qzg/cql-proxy#run-a-cql-proxy-docker-image)
-  - [Use Kubernetes](https://github.com/qzg/cql-proxy#use-kubernetes)
-- [Tracking Metrics](https://github.com/qzg/cql-proxy#track-metrics)
-- [Known issues](https://github.com/qzg/cql-proxy#known-issues)
-    - [Token-aware load balancing](https://github.com/qzg/cql-proxy#token-aware-load-balancing)
+- [What is the cql-proxy?](https://github.com/smatiolids/cql-proxy#what-is-cqlproxy)
+- [When to use cql-proxy](https://github.com/smatiolids/cql-proxy#when-to-use-cql-proxy)
+- [Configuration](https://github.com/smatiolids/cql-proxy#configuration)
+- [Getting started](https://github.com/smatiolids/cql-proxy#getting-started)
+  - [Locally build and run](https://github.com/smatiolids/cql-proxy#locally-build-and-run)
+  - [Run a `cql-proxy` docker image](https://github.com/smatiolids/cql-proxy#run-a-cql-proxy-docker-image)
+  - [Use Kubernetes](https://github.com/smatiolids/cql-proxy#use-kubernetes)
+- [Tracking Metrics](https://github.com/smatiolids/cql-proxy#track-metrics)
+- [Known issues](https://github.com/smatiolids/cql-proxy#known-issues)
+    - [Token-aware load balancing](https://github.com/smatiolids/cql-proxy#token-aware-load-balancing)
 
 
 ## What is `cql-proxy`?

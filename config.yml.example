@@ -6,6 +6,7 @@ rpc-address: 127.0.0.1
 data-center: Your_DC_Name_Here
 track-usage: true # true if you want to track usage for Astra estimates
 usage-keyspace: The_Keyspace_Where_You_Want_to_Track_Metrics # this must already exist
+write-to-streaming: true #
 # USAGE TRACKING DEFAULTS
 # usage-table: astra_usage_stats        # the proxy will create this table for you but the astra-token above must have permissions to do so
 # usage-track-system: false

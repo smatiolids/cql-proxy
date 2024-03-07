@@ -33,7 +33,7 @@ import (
 
 	"github.com/datastax/go-cassandra-native-protocol/message"
 	"github.com/datastax/go-cassandra-native-protocol/primitive"
-	"github.com/qzg/cql-proxy/proxycore"
+	"github.com/smatiolids/cql-proxy/proxycore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v2"
@@ -581,7 +581,7 @@ JYk1t7zg1h+nviixEufA+JEL6BcCa58Ns+rHcf6Gq/kyQAPkvltwMN5pgFZOfvyj
 Q1Sql5Yc43utiHKXQLfLlcy74omegXr14azQDRDfDr/+ZaB4boM4DzYHMkOD6skp
 kAfo4+vn5bTVaskubd+xIiGf7mbUZfYIFxb6HTqaI6exF4N6rH+7zakZXfHQ1ezR
 39UCggEAEbU3rLdSLTxgtV+Jdl2y99g0QCeLK5a3Ya44kq/ndPWzsH2txFkYoFPh
-2kdZ9RepQroSVjoco4UEYm8qXkS9lZaVfs6FQZgHLZdoclIGPWevix6tW2c5V3ur
+2kdZ9RepQroSVjoco4UEYm8qXkS9lZaVfs6FsmatiolidsHLZdoclIGPWevix6tW2c5V3ur
 ZpP0OIPOdWXAA8pj860aAyb98fJtpK8sTL165ll8C1vXp+Dy3eR0o/3wSfHQ/4gM
 SEJo0y1PEv8M9aX39207/Qz4fJn3WNsgURrMiUZpg3OHGS0oUbehHhji8rP1KlZq
 pJyDFmEpynML1HwLg79Hn74FgjBvqe/VKU/z/BKHUZ3HslNAirNJcSpl68GrQhEw

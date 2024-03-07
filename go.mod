@@ -1,4 +1,4 @@
-module github.com/qzg/cql-proxy
+module github.com/smatiolids/cql-proxy
 
 go 1.16
 
