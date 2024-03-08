@@ -47,6 +47,7 @@ type request struct {
 	stmt       *parser.Statement
 	done       bool
 	retryCount int
+	error      bool
 	host       *proxycore.Host
 	stream     int16
 	qp         proxycore.QueryPlan
@@ -154,6 +155,7 @@ func (r *request) OnResult(raw *frame.RawFrame) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.done {
+		r.error = raw.Header.OpCode == primitive.OpCodeError
 		if raw.Header.OpCode != primitive.OpCodeError ||
 			!r.handleErrorResult(raw) { // If the error result is retried then we don't send back this response
 			r.client.proxy.maybeStorePreparedIdempotence(raw, r.msg)

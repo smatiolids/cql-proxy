@@ -4,85 +4,39 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"regexp"
 	"sync"
 	"time"
 
-	"github.com/HdrHistogram/hdrhistogram-go"
+	"github.com/apache/pulsar-client-go/pulsar"
 	"go.uber.org/zap"
 )
 
-type metricRow struct {
-	select_count uint64
-	select_size  uint64
-	select_rrus  uint64
-	insert_count uint64
-	insert_size  uint64
-	insert_wrus  uint64
-	update_count uint64
-	update_size  uint64
-	update_wrus  uint64
-	delete_count uint64
-	delete_size  uint64
-	delete_wrus  uint64
-	lwt_count    uint64
-	lwt_size     uint64
-	lwt_rrus     uint64
-	lwt_wrus     uint64
-	index_wrus   uint64
-	writes_size  uint64
-	reads_size   uint64
-	wrus         uint64
-	rrus         uint64
-}
-
-func NewMetricRow() *metricRow {
-	mr := &metricRow{}
-
-	mr.select_count = 0
-	mr.select_size = 0
-	mr.select_rrus = 0
-	mr.insert_count = 0
-	mr.insert_size = 0
-	mr.insert_wrus = 0
-	mr.update_count = 0
-	mr.update_size = 0
-	mr.update_wrus = 0
-	mr.delete_count = 0
-	mr.delete_size = 0
-	mr.delete_wrus = 0
-	mr.lwt_count = 0
-	mr.lwt_size = 0
-	mr.lwt_rrus = 0
-	mr.lwt_wrus = 0
-	mr.index_wrus = 0
-	mr.writes_size = 0
-	mr.reads_size = 0
-	mr.wrus = 0
-	mr.rrus = 0
-
-	return mr
-}
-
-// sm.stats[timestamp]["keyspace.table"]["select_count"] = 12345
-type statsrecord map[time.Time]map[string]*metricRow
-
-// sm.counts[timestamp]["keyspace.table"]["reads|writes|all"][5|9|234...] = 1232455
-type counts map[time.Time]map[string]map[string]map[uint64]uint64
-
-// sm.latencies[timestamp]["keyspace.table"][reads|writes] = hdrhistogram.Histogram
-type latencies map[time.Time]map[string]map[string]*hdrhistogram.Histogram
-
 type streamingManager struct {
-	id          string
-	config      *runConfig
-	MessageFeed chan *RequestResponse
-	ctx         context.Context
+	config         *runConfig
+	ctx            context.Context
+	MessageFeed    chan *RequestResponse
+	pulsarClient   pulsar.Client
+	pulsarProducer pulsar.Producer
+}
+
+type ProducerService struct {
+}
+
+type messageType struct {
+	Query string    `json:"query"`
+	TS    time.Time `json:"ts"`
 }
 
 var (
-	once sync.Once
-	sm   *streamingManager
+	once             sync.Once
+	sm               *streamingManager
+	messageSchemaDef = "{\"type\":\"record\",\"name\":\"inter_cloud_replication\",\"namespace\":\"default\"," +
+		"\"fields\":[" +
+		"{\"name\":\"ts\",\"type\":\"string\"}," +
+		"{\"name\":\"query\",\"type\":\"string\"}" +
+		"]}"
 )
 
 var systemTables = []string{"local", "peers", "peers_v2", "schema_keyspaces", "schema_columnfamilies", "schema_columns", "schema_usertypes"}
@@ -92,6 +46,12 @@ func SingletonStreamingManager(ctx context.Context, config *runConfig, proxy *Pr
 	if config.WriteToStreaming {
 		once.Do(func() {
 			proxy.logger.Debug("Starting writes to Streaming")
+			sm = &streamingManager{
+				config:      config,
+				ctx:         ctx,
+				MessageFeed: make(chan *RequestResponse, 1024),
+			}
+			go initStreaming()
 			go listen()
 		})
 		return sm, err
@@ -105,8 +65,7 @@ func listen() {
 	for {
 		select {
 		case req := <-sm.MessageFeed:
-			fmt.Println(req)
-			// handleQuery(req)
+			handleQuery(req)
 		case <-sm.ctx.Done():
 			return
 		}
@@ -149,18 +108,20 @@ func handleQuery(reqres *RequestResponse) {
 		}
 		if isSystemTable(query) {
 			return
-		} else if match, _ := regexp.MatchString(`(?i)^\s*SELECT`, query); match {
-			fmt.Println("SELECT")
 		} else if match, _ := regexp.MatchString(`(?i)(IF NOT EXISTS|IF EXISTS)`, query); match {
 			// this case still needs some way to handle UPDATE ... IF ...
 			fmt.Println("LWT")
 		} else if match, _ := regexp.MatchString(`(?i)^\s*INSERT`, query); match {
 			fmt.Println("INSERT")
+			PostToStreaming(query)
 		} else if match, _ := regexp.MatchString(`(?i)^\s*UPDATE`, query); match {
 			fmt.Println("UPDATE")
 		} else if match, _ := regexp.MatchString(`(?i)^\s*DELETE`, query); match {
 			fmt.Println("DELETE")
-		}
+		} // else if match, _ := regexp.MatchString(`(?i)^\s*SELECT`, query); match {
+		// 	fmt.Println("SELECT")
+		// }
+
 	}
 }
 
@@ -171,4 +132,53 @@ func isSystemTable(name string) bool {
 		}
 	}
 	return false
+}
+
+func initStreaming() {
+
+	log.Println("[Astra Streaming] Starting Pulsar Client")
+
+	var err error
+
+	sm.pulsarClient, err = pulsar.NewClient(pulsar.ClientOptions{
+		URL:            sm.config.StreamingURI,
+		Authentication: pulsar.NewAuthenticationToken(sm.config.StreamingToken),
+	})
+
+	if err != nil {
+		log.Fatalf("[Astra Streaming] Could not instantiate Pulsar client: %v", err)
+	}
+
+	producerJS := pulsar.NewJSONSchema(messageSchemaDef, nil)
+
+	sm.pulsarProducer, err = sm.pulsarClient.CreateProducer(pulsar.ProducerOptions{
+		Topic:  sm.config.StreamingTopic,
+		Schema: producerJS,
+	})
+
+	if err != nil {
+		log.Fatalf("[Astra Streaming] Could not instantiate Pulsar Producer: %v", err)
+	}
+
+	// defer sm.pulsarClient.Close()
+
+}
+
+func PostToStreaming(query string) {
+	TS := time.Now()
+	msg := pulsar.ProducerMessage{
+		Key: TS.Format(time.RFC3339),
+		Value: &messageType{
+			Query: query,
+			TS:    TS,
+		},
+		EventTime: time.Now(),
+	}
+	ctx := context.Background()
+	var err error
+
+	_, err = sm.pulsarProducer.Send(ctx, &msg)
+	if err != nil {
+		log.Fatal(err)
+	}
 }

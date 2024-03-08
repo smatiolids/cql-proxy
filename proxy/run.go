@@ -69,6 +69,9 @@ type runConfig struct {
 	Peers                []PeerConfig  `yaml:"peers" kong:"-"` // Not available as a CLI flag
 	TrackUsage           bool          `yaml:"track-usage" help:"Enable usage tracking for Astra Serverless estimation." env:"TRACK_USAGE" default:"false"`
 	WriteToStreaming     bool          `yaml:"write-to-streaming" help:"Enable posting the data write requests to Streaming." env:"WRITE_TO_STREAMING" default:"false"`
+	StreamingURI         string        `yaml:"streaming-uri" help:"Enable posting the data write requests to Streaming." env:"STREAMING_URI"`
+	StreamingTopic       string        `yaml:"streaming-topic" help:"Enable posting the data write requests to Streaming." env:"STREAMING_TOPIC"`
+	StreamingToken       string        `yaml:"streaming-token" help:"Enable posting the data write requests to Streaming." env:"STREAMING_TOKEN"`
 	UsageTrackSystem     bool          `yaml:"usage-track-system" help:"Include system tables in usage tracking." env:"USAGE_TRACK_SYSTEM" default:"false"`
 	UsageKeyspace        string        `yaml:"usage-keyspace" help:"Specify the keyspace where the usage table will be created." env:"USAGE_KEYSPACE"`
 	UsageRruBytes        int           `yaml:"usage-rru-bytes" help:"Specify the size of a read-request unit" default:"4096" env:"USAGE_RRU_BYTES"`
@@ -166,8 +169,8 @@ func Run(ctx context.Context, args []string) int {
 		return 1
 	}
 
-	if cfg.WriteToStreaming && len(cfg.UsageKeyspace) == 0 {
-		cliCtx.Errorf("If write-to-streaming is enabled, you must specify a keyspace where the usage table will be created.")
+	if cfg.WriteToStreaming && len(cfg.StreamingTopic) == 0 {
+		cliCtx.Errorf("If write-to-streaming is enabled, you must specify the topic.")
 		return 1
 	}
 
